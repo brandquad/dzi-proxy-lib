@@ -23,7 +23,7 @@ func downloadAndUnzip(s3Key string) error {
 
 	log.Println("[D] Downloading s3 archive", s3Key)
 
-	// Скачиваем ZIP-файл из S3
+	// Скачиваем ZIP-файл из s3Client
 	hashStr := getMD5Hash(s3Key)
 	destDir := filepath.Join(LibConfig.CacheDir, hashStr)
 
@@ -36,14 +36,14 @@ func downloadAndUnzip(s3Key string) error {
 	}
 	defer file.Close()
 
-	// Запрос к S3
+	// Запрос к s3Client
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(LibConfig.S3Bucket),
 		Key:    aws.String(s3Key),
 	}
-	output, err := S3.GetObject(input)
+	output, err := s3Client.GetObject(input)
 	if err != nil {
-		return fmt.Errorf("failed to download file from S3: %w", err)
+		return fmt.Errorf("failed to download file from s3Client: %w", err)
 	}
 	defer output.Body.Close()
 

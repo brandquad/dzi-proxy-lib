@@ -8,9 +8,13 @@ import (
 	"log"
 )
 
-var S3 = getS3()
+var s3Client = getS3()
 
 func getS3() *s3.S3 {
+	if s3Client != nil {
+		return s3Client
+	}
+
 	sess, err := session.NewSession(&aws.Config{
 		Credentials: awscredentials.NewStaticCredentials(
 			LibConfig.S3AccessKey,
