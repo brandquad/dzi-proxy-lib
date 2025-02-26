@@ -30,7 +30,6 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	fullPath := r.URL.Path
 	matches := dziPathRegex.FindStringSubmatch(fullPath)
 	if len(matches) == 0 {
-		log.Println("No match")
 		return
 	}
 	hexedStr := matches[1]
@@ -44,15 +43,15 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	//log.Println(fullPath, pairs)
-	zipPath := fmt.Sprintf("%s.zip", pairs[0])
+	key := fmt.Sprintf("%s.zip", pairs[0])
 	tilePath := strings.TrimPrefix(pairs[1], "/")
 
-	if zipPath == "" || tilePath == "" {
+	if key == "" || tilePath == "" {
 		http.Error(w, "Missing zip or Tile-Key", http.StatusBadRequest)
 		return
 	}
 
-	hash := getMD5Hash(zipPath)
+	hash := getMD5Hash(key)
 
 	// Локальный мьютекс для конкретного файла
 	fileMutexesMu.Lock()
@@ -93,7 +92,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Скачиваем и распаковываем ZIP
-			if err := downloadAndUnzip(zipPath); err != nil {
+			if err := downloadAndUnzip(key); err != nil {
 				log.Printf("Failed to download or extract ZIP file: %v", err)
 				cache.mu.Lock()
 				delete(cache.files, hash)
@@ -119,7 +118,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Expires", time.Now().Add(time.Duration(LibConfig.HttpCacheDays)*24*time.Hour).Format(http.TimeFormat))
 	w.Header().Set("Content-Type", "image/jpeg")
 	http.ServeFile(w, r, filePath)
-	log.Println("Served file:", filePath)
+	log.Printf("Served file: %s -> %s", fullPath, filePath)
 }
 
 // Фоновая горутина для очистки устаревших директорий

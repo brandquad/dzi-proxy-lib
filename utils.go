@@ -19,12 +19,12 @@ func getMD5Hash(text string) string {
 	return hex.EncodeToString(hasher[:])
 }
 
-func downloadAndUnzip(s3Key string) error {
+func downloadAndUnzip(key string) error {
 
-	log.Println("[D] Downloading s3 archive", s3Key)
+	log.Println("[D] Downloading s3 archive", key)
 
 	// Скачиваем ZIP-файл из s3Client
-	hashStr := getMD5Hash(s3Key)
+	hashStr := getMD5Hash(key)
 	destDir := filepath.Join(LibConfig.CacheDir, hashStr)
 
 	zipFilePath := filepath.Join(LibConfig.CacheDir, hashStr+".zip")
@@ -39,7 +39,7 @@ func downloadAndUnzip(s3Key string) error {
 	// Запрос к s3Client
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(LibConfig.S3Bucket),
-		Key:    aws.String(s3Key),
+		Key:    aws.String(key),
 	}
 
 	var s3Client = getS3()
@@ -74,8 +74,11 @@ func unzip(src, dest string) error {
 
 	for _, f := range r.File {
 
-		log.Println(f.Name)
+		if !f.FileInfo().IsDir() && (strings.HasSuffix(f.Name, ".dzi") || strings.HasSuffix(f.Name, ".xml")) {
+			continue
+		}
 
+		//log.Println(f.Name)
 		n := strings.Split(f.Name, "/")
 		var fPath string
 		switch {
@@ -96,7 +99,7 @@ func unzip(src, dest string) error {
 			continue
 		}
 
-		if err := os.MkdirAll(filepath.Dir(fPath), os.ModePerm); err != nil {
+		if err = os.MkdirAll(filepath.Dir(fPath), os.ModePerm); err != nil {
 			return err
 		}
 
