@@ -1,4 +1,4 @@
-module dzi-proxy-lib
+module dziproxylib
 
 go 1.23
 

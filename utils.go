@@ -1,4 +1,4 @@
-package dziproxy
+package dziproxylib
 
 import (
 	"archive/zip"
@@ -25,9 +25,9 @@ func downloadAndUnzip(s3Key string) error {
 
 	// Скачиваем ZIP-файл из S3
 	hashStr := getMD5Hash(s3Key)
-	destDir := filepath.Join(Config.CacheDir, hashStr)
+	destDir := filepath.Join(LibConfig.CacheDir, hashStr)
 
-	zipFilePath := filepath.Join(Config.CacheDir, hashStr+".zip")
+	zipFilePath := filepath.Join(LibConfig.CacheDir, hashStr+".zip")
 	defer os.Remove(zipFilePath) // Удаляем временный файл после использования
 
 	file, err := os.Create(zipFilePath)
@@ -38,7 +38,7 @@ func downloadAndUnzip(s3Key string) error {
 
 	// Запрос к S3
 	input := &s3.GetObjectInput{
-		Bucket: aws.String(Config.S3Bucket),
+		Bucket: aws.String(LibConfig.S3Bucket),
 		Key:    aws.String(s3Key),
 	}
 	output, err := S3.GetObject(input)

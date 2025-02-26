@@ -1,4 +1,4 @@
-package dziproxy
+package dziproxylib
 
 import (
 	"sync"

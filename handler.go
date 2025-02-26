@@ -1,4 +1,4 @@
-package dziproxy
+package dziproxylib
 
 import (
 	"encoding/hex"
@@ -73,7 +73,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	item, exists := cache.files[hash]
 	if !exists {
 		item = &CacheItem{
-			path: filepath.Join(Config.CacheDir, hash),
+			path: filepath.Join(LibConfig.CacheDir, hash),
 			cond: sync.NewCond(&sync.Mutex{}),
 		}
 		item.wg.Add(1) // Новый процесс скачивания
@@ -115,9 +115,9 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	cache.mu.Unlock()
 
 	// Отдаем файл
-	filePath := filepath.Join(Config.CacheDir, hash, tilePath)
-	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", Config.HttpCacheDays*24*3600))
-	w.Header().Set("Expires", time.Now().Add(time.Duration(Config.HttpCacheDays)*24*time.Hour).Format(http.TimeFormat))
+	filePath := filepath.Join(LibConfig.CacheDir, hash, tilePath)
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", LibConfig.HttpCacheDays*24*3600))
+	w.Header().Set("Expires", time.Now().Add(time.Duration(LibConfig.HttpCacheDays)*24*time.Hour).Format(http.TimeFormat))
 	w.Header().Set("Content-Type", "image/jpeg")
 	http.ServeFile(w, r, filePath)
 	log.Println("Served file:", filePath)
@@ -129,8 +129,8 @@ func cleanupCache() {
 		time.Sleep(1 * time.Minute)
 		cache.mu.Lock()
 		for zipPath, item := range cache.files {
-			if time.Since(item.lastAccess) > Config.CleanupTimeout {
-				os.RemoveAll(filepath.Join(Config.CacheDir, filepath.Base(zipPath)))
+			if time.Since(item.lastAccess) > LibConfig.CleanupTimeout {
+				os.RemoveAll(filepath.Join(LibConfig.CacheDir, filepath.Base(zipPath)))
 				delete(cache.files, zipPath)
 			}
 		}
@@ -138,7 +138,9 @@ func cleanupCache() {
 	}
 }
 
-func DziProxyServer() (*http.Server, error) {
+func DziProxyServer(config *Config) (*http.Server, error) {
+	LibConfig = config
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/{path...}", handler)
 	c := cors.New(cors.Options{
@@ -159,7 +161,7 @@ func DziProxyServer() (*http.Server, error) {
 	})
 	h := c.Handler(mux)
 	server := &http.Server{
-		Addr:    Config.Listen,
+		Addr:    LibConfig.Listen,
 		Handler: h,
 	}
 

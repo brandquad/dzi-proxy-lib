@@ -1,4 +1,4 @@
-package dziproxy
+package dziproxylib
 
 import (
 	"github.com/aws/aws-sdk-go/aws"
@@ -14,12 +14,12 @@ var Session *session.Session
 func init() {
 	sess, err := session.NewSession(&aws.Config{
 		Credentials: awscredentials.NewStaticCredentials(
-			Config.S3AccessKey,
-			Config.S3SecretKey, "",
+			LibConfig.S3AccessKey,
+			LibConfig.S3SecretKey, "",
 		),
-		Endpoint:         aws.String(Config.S3Host),
-		Region:           aws.String(Config.S3Region),
-		DisableSSL:       aws.Bool(!Config.S3UseSSL),
+		Endpoint:         aws.String(LibConfig.S3Host),
+		Region:           aws.String(LibConfig.S3Region),
+		DisableSSL:       aws.Bool(!LibConfig.S3UseSSL),
 		S3ForcePathStyle: aws.Bool(true),
 	})
 
