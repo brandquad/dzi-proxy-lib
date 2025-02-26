@@ -8,10 +8,9 @@ import (
 	"log"
 )
 
-var S3 *s3.S3
-var Session *session.Session
+var S3 = getS3()
 
-func init() {
+func getS3() *s3.S3 {
 	sess, err := session.NewSession(&aws.Config{
 		Credentials: awscredentials.NewStaticCredentials(
 			LibConfig.S3AccessKey,
@@ -22,10 +21,8 @@ func init() {
 		DisableSSL:       aws.Bool(!LibConfig.S3UseSSL),
 		S3ForcePathStyle: aws.Bool(true),
 	})
-
 	if err != nil {
 		log.Fatalln(err)
 	}
-	S3 = s3.New(sess)
-	Session = sess
+	return s3.New(sess)
 }

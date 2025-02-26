@@ -124,7 +124,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 
 // Фоновая горутина для очистки устаревших директорий
-func cleanupCache() {
+func CleanupCache() {
 	for {
 		time.Sleep(1 * time.Minute)
 		cache.mu.Lock()
