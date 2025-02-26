@@ -8,11 +8,12 @@ import (
 	"log"
 )
 
-var s3Client = getS3()
+var _s3client *s3.S3
 
 func getS3() *s3.S3 {
-	if s3Client != nil {
-		return s3Client
+
+	if _s3client != nil {
+		return _s3client
 	}
 
 	sess, err := session.NewSession(&aws.Config{
@@ -28,5 +29,6 @@ func getS3() *s3.S3 {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	return s3.New(sess)
+	_s3client = s3.New(sess)
+	return _s3client
 }

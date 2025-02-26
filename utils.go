@@ -41,6 +41,9 @@ func downloadAndUnzip(s3Key string) error {
 		Bucket: aws.String(LibConfig.S3Bucket),
 		Key:    aws.String(s3Key),
 	}
+
+	var s3Client = getS3()
+
 	output, err := s3Client.GetObject(input)
 	if err != nil {
 		return fmt.Errorf("failed to download file from s3Client: %w", err)
