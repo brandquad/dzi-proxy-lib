@@ -118,7 +118,10 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Expires", time.Now().Add(time.Duration(LibConfig.HttpCacheDays)*24*time.Hour).Format(http.TimeFormat))
 	w.Header().Set("Content-Type", "image/jpeg")
 	http.ServeFile(w, r, filePath)
-	log.Printf("Served file: %s -> %s", fullPath, filePath)
+
+	if !LibConfig.Silent {
+		log.Printf("Served file: %s -> %s", fullPath, filePath)
+	}
 }
 
 // Фоновая горутина для очистки устаревших директорий

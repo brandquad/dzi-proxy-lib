@@ -18,4 +18,5 @@ type Config struct {
 	CleanupTimeout    time.Duration
 	CacheDir          string
 	HttpCacheDays     int
+	Silent            bool
 }
