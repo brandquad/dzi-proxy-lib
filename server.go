@@ -9,6 +9,7 @@ func DziProxyServer(config *Config) (*http.Server, error) {
 	LibConfig = config
 
 	mux := http.NewServeMux()
+	//mux.HandleFunc("/heat/{path...}", heatHandler)
 	mux.HandleFunc("/{path...}", handler)
 	c := cors.New(cors.Options{
 		AllowedOrigins: []string{"*"}, // Разрешить все домены

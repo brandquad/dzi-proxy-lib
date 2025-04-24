@@ -18,31 +18,83 @@ var fileMutexes = make(map[string]*sync.Mutex)
 var fileMutexesMu sync.Mutex // защита доступа к fileMutexes
 var dziPathRegex = regexp.MustCompile(`/dzi(?:_bw)?/page_\d+/([0-9a-f]+)/`)
 
+func decode(urlPath string) ([]string, string, error) {
+	fullPath := urlPath
+	matches := dziPathRegex.FindStringSubmatch(fullPath)
+	if len(matches) == 0 {
+		return nil, "", nil
+	}
+	hexedStr := matches[1]
+	unHexedBytes, err := hex.DecodeString(hexedStr)
+	if err != nil {
+		return nil, "", err
+	}
+	fullPath = strings.Replace(fullPath, hexedStr, string(unHexedBytes), 1)
+	pairs := strings.Split(fullPath, ".zip")
+
+	return pairs, fullPath, nil
+}
+
+func heatHandler(w http.ResponseWriter, r *http.Request) {
+
+	urlPath := strings.TrimPrefix(r.URL.Path, "/heat")
+	pairs, _, err := decode(urlPath)
+	if err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+	}
+	key := fmt.Sprintf("%s.zip", pairs[0])
+	hash := getMD5Hash(key)
+	destDir := filepath.Join(LibConfig.CacheDir, hash)
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	item, exists := cache.files[hash]
+	if exists {
+		log.Println("Cache exists")
+		return
+	}
+
+	log.Println(item)
+
+	//check folder exists
+	if _, err := os.Stat(destDir); !os.IsNotExist(err) {
+		log.Println("Cache exists", destDir)
+		return
+	}
+
+	if err := downloadAndUnzip(key); err != nil {
+		http.Error(w, "Failed to download and unzip", http.StatusInternalServerError)
+	}
+
+	log.Println("heatHandler", destDir)
+
+	item = &CacheItem{
+		path: filepath.Join(LibConfig.CacheDir, hash),
+		cond: sync.NewCond(&sync.Mutex{}),
+	}
+	cache.files[hash] = item
+
+}
+
 func handler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK) // Отвечаем "OK" на preflight-запросы
 		return
 	}
 
-	// Fix problem with incorrect file path
-	// Before request to proxy, filepaths are encoded in hex
-
-	fullPath := r.URL.Path
-	matches := dziPathRegex.FindStringSubmatch(fullPath)
-	if len(matches) == 0 {
+	if strings.HasPrefix(r.URL.Path, "/heat") {
+		heatHandler(w, r)
 		return
 	}
-	hexedStr := matches[1]
-	unHexedBytes, _ := hex.DecodeString(hexedStr)
-	fullPath = strings.Replace(fullPath, hexedStr, string(unHexedBytes), 1)
-	pairs := strings.Split(fullPath, ".zip")
 
-	if len(pairs) != 2 {
+	pairs, fullPath, err := decode(r.URL.Path)
+
+	if err != nil || len(pairs) != 2 {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
-	//log.Println(fullPath, pairs)
 	key := fmt.Sprintf("%s.zip", pairs[0])
 	tilePath := strings.TrimPrefix(pairs[1], "/")
 
