@@ -9,13 +9,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"bytes"
 	"sync"
 	"time"
 )
 
 var cache = &ZipCache{files: make(map[string]*CacheItem)}
-var fileMutexes = make(map[string]*sync.Mutex)
-var fileMutexesMu sync.Mutex // защита доступа к fileMutexes
+// var fileMutexes = make(map[string]*sync.Mutex) // Removed
+// var fileMutexesMu sync.Mutex // защита доступа к fileMutexes // Removed
+var fileMutexes = &sync.Map{} // New sync.Map for file-specific mutexes
 var dziPathRegex = regexp.MustCompile(`/dzi(?:_bw)?/page_\d+/([0-9a-f]+)/`)
 
 func decode(urlPath string) ([]string, string, error) {
@@ -105,14 +107,10 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	hash := getMD5Hash(key)
 
-	// Локальный мьютекс для конкретного файла
-	fileMutexesMu.Lock()
-	mutex, exists := fileMutexes[hash]
-	if !exists {
-		mutex = &sync.Mutex{}
-		fileMutexes[hash] = mutex
-	}
-	fileMutexesMu.Unlock()
+	// Локальный мьютекс для конкретного файла using sync.Map
+	var mutex *sync.Mutex
+	rawMutex, _ := fileMutexes.LoadOrStore(hash, &sync.Mutex{})
+	mutex = rawMutex.(*sync.Mutex)
 
 	// Заблокировать доступ к конкретному файлу
 	mutex.Lock()
@@ -164,15 +162,50 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	item.lastAccess = time.Now()
 	cache.mu.Unlock()
 
+	// In-memory cache key
+	memCacheKey := hash + "/" + tilePath
+
+	// 1. Check In-Memory Cache
+	if tileData, found := memCache.Get(memCacheKey); found {
+		w.Header().Set("Content-Type", mimeTypeByExtension(filepath.Ext(tilePath)))
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", LibConfig.HttpCacheDays*24*3600))
+		w.Header().Set("Expires", time.Now().Add(time.Duration(LibConfig.HttpCacheDays)*24*time.Hour).Format(http.TimeFormat))
+		if !LibConfig.Silent {
+			log.Printf("Served from memory cache: %s -> %s", fullPath, memCacheKey)
+		}
+		http.ServeContent(w, r, tilePath, time.Now(), bytes.NewReader(tileData))
+		return
+	}
+
 	// Отдаем файл
 	filePath := filepath.Join(LibConfig.CacheDir, hash, tilePath)
-	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", LibConfig.HttpCacheDays*24*3600))
-	w.Header().Set("Expires", time.Now().Add(time.Duration(LibConfig.HttpCacheDays)*24*time.Hour).Format(http.TimeFormat))
-	w.Header().Set("Content-Type", "image/jpeg")
-	http.ServeFile(w, r, filePath)
+
+	// 2. Populate In-Memory Cache (after disk operations, before serving)
+	// Read the file content to potentially store in memory cache and serve directly
+	tileData, err := os.ReadFile(filePath)
+	if err == nil {
+		memCache.Put(memCacheKey, tileData) // Add to in-memory cache
+		if !LibConfig.Silent {
+			log.Printf("Populated memory cache and serving: %s -> %s", fullPath, memCacheKey)
+		}
+		w.Header().Set("Content-Type", mimeTypeByExtension(filepath.Ext(tilePath)))
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", LibConfig.HttpCacheDays*24*3600))
+		w.Header().Set("Expires", time.Now().Add(time.Duration(LibConfig.HttpCacheDays)*24*time.Hour).Format(http.TimeFormat))
+		http.ServeContent(w, r, tilePath, time.Now(), bytes.NewReader(tileData))
+	} else {
+		// Fallback to http.ServeFile if reading for memory cache failed
+		if !LibConfig.Silent {
+			log.Printf("Failed to read file for memory cache, falling back to ServeFile: %s. Error: %v", filePath, err)
+		}
+		w.Header().Set("Content-Type", mimeTypeByExtension(filepath.Ext(tilePath))) // Ensure content type is set
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", LibConfig.HttpCacheDays*24*3600))
+		w.Header().Set("Expires", time.Now().Add(time.Duration(LibConfig.HttpCacheDays)*24*time.Hour).Format(http.TimeFormat))
+		http.ServeFile(w, r, filePath)
+	}
 
 	if !LibConfig.Silent {
-		log.Printf("Served file: %s -> %s", fullPath, filePath)
+		// This log might be redundant if served from memory, but good for ServeFile case
+		log.Printf("Served file (potentially after fallback): %s -> %s", fullPath, filePath)
 	}
 }
 
@@ -188,5 +221,25 @@ func CleanupCache() {
 			}
 		}
 		cache.mu.Unlock()
+	}
+}
+
+// mimeTypeByExtension returns a basic MIME type based on file extension.
+func mimeTypeByExtension(ext string) string {
+	ext = strings.ToLower(ext)
+	switch ext {
+	case ".jpeg", ".jpg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".dzi": // Deep Zoom Image typically uses XML format for descriptors
+		return "application/xml"
+	case ".xml":
+		return "application/xml"
+	case ".json":
+		return "application/json"
+	default:
+		// log.Printf("[W] Unknown extension '%s', serving as application/octet-stream", ext)
+		return "application/octet-stream"
 	}
 }

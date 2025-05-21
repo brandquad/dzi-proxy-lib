@@ -14,9 +14,10 @@ type Config struct {
 	S3Bucket          string
 	S3Host            string
 	S3UseSSL          bool
-	CleanupTimeoutCfg int
 	CleanupTimeout    time.Duration
 	CacheDir          string
 	HttpCacheDays     int
 	Silent            bool
+	InMemoryCacheCapacityItems int   // Max number of items in in-memory cache
+	InMemoryCacheCapacityBytes int64 // Max total size of items in in-memory cache in bytes
 }

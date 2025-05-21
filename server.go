@@ -5,8 +5,31 @@ import (
 	"net/http"
 )
 
+var memCache *InMemoryCache
+
+const (
+	defaultInMemoryCacheCapacityItems = 1000
+	defaultInMemoryCacheCapacityBytes = 50 * 1024 * 1024 // 50MB
+)
+
 func DziProxyServer(config *Config) (*http.Server, error) {
 	LibConfig = config
+
+	// Set default for CleanupTimeout if not provided
+	if LibConfig.CleanupTimeout == 0 {
+		LibConfig.CleanupTimeout = 10 * time.Minute // Default to 10 minutes
+	}
+
+	// Initialize in-memory cache
+	items := LibConfig.InMemoryCacheCapacityItems
+	if items <= 0 {
+		items = defaultInMemoryCacheCapacityItems
+	}
+	bytes := LibConfig.InMemoryCacheCapacityBytes
+	if bytes <= 0 {
+		bytes = defaultInMemoryCacheCapacityBytes
+	}
+	memCache = NewInMemoryCache(items, bytes)
 
 	mux := http.NewServeMux()
 	//mux.HandleFunc("/heat/{path...}", heatHandler)
