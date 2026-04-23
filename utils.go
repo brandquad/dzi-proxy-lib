@@ -9,12 +9,31 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 )
+
+type archiveIndex struct {
+	files      map[string]string
+	tiles      map[string]string
+	levels     map[int]struct{}
+	levelSizes map[int][]int
+	maxLevel   int
+}
+
+func newArchiveIndex() *archiveIndex {
+	return &archiveIndex{
+		files:      make(map[string]string),
+		tiles:      make(map[string]string),
+		levels:     make(map[int]struct{}),
+		levelSizes: make(map[int][]int),
+		maxLevel:   -1,
+	}
+}
 
 func parseBoolParam(raw, name string) (bool, error) {
 	value, err := strconv.ParseBool(raw)
@@ -59,7 +78,38 @@ func getMD5Hash(text string) string {
 	return hex.EncodeToString(hasher[:])
 }
 
-func downloadAndUnzip(key string) error {
+func prepareArchiveIndex(key string, item *CacheItem) error {
+	if stat, err := os.Stat(item.path); err == nil && stat.IsDir() {
+		index, err := loadArchiveIndexFromDir(item.path)
+		if err != nil {
+			return err
+		}
+		applyArchiveIndex(item, index)
+		return nil
+	}
+
+	if err := os.MkdirAll(item.path, os.ModePerm); err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
+	}
+
+	index, err := downloadAndUnzip(key)
+	if err != nil {
+		return err
+	}
+
+	applyArchiveIndex(item, index)
+	return nil
+}
+
+func applyArchiveIndex(item *CacheItem, index *archiveIndex) {
+	item.files = index.files
+	item.tiles = index.tiles
+	item.levels = index.levels
+	item.levelSizes = index.levelSizes
+	item.maxLevel = index.maxLevel
+}
+
+func downloadAndUnzip(key string) (*archiveIndex, error) {
 
 	log.Println("[D] Downloading s3 archive", key)
 
@@ -72,7 +122,7 @@ func downloadAndUnzip(key string) error {
 
 	file, err := os.Create(zipFilePath)
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}
 	defer file.Close()
 
@@ -86,31 +136,168 @@ func downloadAndUnzip(key string) error {
 
 	output, err := s3Client.GetObject(input)
 	if err != nil {
-		return fmt.Errorf("failed to download file from s3Client: %w", err)
+		return nil, fmt.Errorf("failed to download file from s3Client: %w", err)
 	}
 	defer output.Body.Close()
 
 	// Записываем содержимое в файл
 	_, err = io.Copy(file, output.Body)
 	if err != nil {
-		return fmt.Errorf("failed to save file: %w", err)
+		return nil, fmt.Errorf("failed to save file: %w", err)
 	}
 
 	// Распаковываем ZIP-файл
-	err = unzip(zipFilePath, destDir)
+	index, err := unzip(zipFilePath, destDir)
 	if err != nil {
-		return fmt.Errorf("failed to unzip file: %w", err)
+		return nil, fmt.Errorf("failed to unzip file: %w", err)
+	}
+
+	if err := populateLevelSizes(index); err != nil {
+		return nil, fmt.Errorf("failed to populate level sizes: %w", err)
+	}
+
+	return index, nil
+}
+
+func loadArchiveIndexFromDir(root string) (*archiveIndex, error) {
+	index := newArchiveIndex()
+
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		relativePath, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		relativePath = filepath.ToSlash(relativePath)
+		index.files[relativePath] = path
+
+		pathParts := strings.Split(relativePath, "/")
+		if len(pathParts) == 2 {
+			level, err := strconv.Atoi(pathParts[0])
+			if err == nil {
+				index.levels[level] = struct{}{}
+				if level > index.maxLevel {
+					index.maxLevel = level
+				}
+				tileKey := fmt.Sprintf("%d/%s", level, strings.TrimSuffix(pathParts[1], filepath.Ext(pathParts[1])))
+				index.tiles[tileKey] = path
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := populateLevelSizes(index); err != nil {
+		return nil, err
+	}
+
+	return index, nil
+}
+
+func populateLevelSizes(index *archiveIndex) error {
+	type levelDims struct {
+		colPaths map[int]string
+		rowPaths map[int]string
+	}
+
+	levelMeta := make(map[int]*levelDims)
+	for tileKey, tilePath := range index.tiles {
+		parts := strings.Split(tileKey, "/")
+		if len(parts) != 2 {
+			continue
+		}
+
+		level, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+
+		coords := strings.Split(parts[1], "_")
+		if len(coords) != 2 {
+			continue
+		}
+
+		col, err := strconv.Atoi(coords[0])
+		if err != nil {
+			continue
+		}
+		row, err := strconv.Atoi(coords[1])
+		if err != nil {
+			continue
+		}
+
+		meta, ok := levelMeta[level]
+		if !ok {
+			meta = &levelDims{
+				colPaths: make(map[int]string),
+				rowPaths: make(map[int]string),
+			}
+			levelMeta[level] = meta
+		}
+
+		if _, exists := meta.colPaths[col]; !exists {
+			meta.colPaths[col] = tilePath
+		}
+		if _, exists := meta.rowPaths[row]; !exists {
+			meta.rowPaths[row] = tilePath
+		}
+	}
+
+	for level, meta := range levelMeta {
+		width, err := sumTileConfigs(meta.colPaths, true)
+		if err != nil {
+			return err
+		}
+		height, err := sumTileConfigs(meta.rowPaths, false)
+		if err != nil {
+			return err
+		}
+		index.levelSizes[level] = []int{width, height}
 	}
 
 	return nil
 }
 
-func unzip(src, dest string) error {
+func sumTileConfigs(paths map[int]string, useWidth bool) (int, error) {
+	keys := make([]int, 0, len(paths))
+	for key := range paths {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	total := 0
+	for _, key := range keys {
+		cfg, err := decodeTileConfig(paths[key])
+		if err != nil {
+			return 0, err
+		}
+		if useWidth {
+			total += cfg.Width
+			continue
+		}
+		total += cfg.Height
+	}
+
+	return total, nil
+}
+
+func unzip(src, dest string) (*archiveIndex, error) {
 	r, err := zip.OpenReader(src)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer r.Close()
+
+	index := newArchiveIndex()
 
 	for _, f := range r.File {
 
@@ -127,11 +314,11 @@ func unzip(src, dest string) error {
 		case len(n) == 4:
 			fPath = filepath.Join(dest, n[2], n[3])
 		default:
-			return fmt.Errorf("illegal file path: %s", fPath)
+			return nil, fmt.Errorf("illegal file path: %s", fPath)
 		}
 
 		if !strings.HasPrefix(fPath, filepath.Clean(dest)+string(os.PathSeparator)) {
-			return fmt.Errorf("illegal file path: %s", fPath)
+			return nil, fmt.Errorf("illegal file path: %s", fPath)
 		}
 
 		if f.FileInfo().IsDir() {
@@ -140,17 +327,17 @@ func unzip(src, dest string) error {
 		}
 
 		if err = os.MkdirAll(filepath.Dir(fPath), os.ModePerm); err != nil {
-			return err
+			return nil, err
 		}
 
 		outFile, err := os.OpenFile(fPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		rc, err := f.Open()
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		_, err = io.Copy(outFile, rc)
@@ -158,8 +345,28 @@ func unzip(src, dest string) error {
 		rc.Close()
 
 		if err != nil {
-			return err
+			return nil, err
+		}
+
+		relativePath, err := filepath.Rel(dest, fPath)
+		if err != nil {
+			return nil, err
+		}
+		relativePath = filepath.ToSlash(relativePath)
+		index.files[relativePath] = fPath
+
+		pathParts := strings.Split(relativePath, "/")
+		if len(pathParts) == 2 {
+			level, err := strconv.Atoi(pathParts[0])
+			if err == nil {
+				index.levels[level] = struct{}{}
+				if level > index.maxLevel {
+					index.maxLevel = level
+				}
+				tileKey := fmt.Sprintf("%d/%s", level, strings.TrimSuffix(pathParts[1], filepath.Ext(pathParts[1])))
+				index.tiles[tileKey] = fPath
+			}
 		}
 	}
-	return nil
+	return index, nil
 }

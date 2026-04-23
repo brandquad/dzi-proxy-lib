@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -63,8 +62,13 @@ func serveHandler(w http.ResponseWriter, r *http.Request) {
 	item, exists := cache.files[hash]
 	if !exists {
 		item = &CacheItem{
-			path: filepath.Join(LibConfig.CacheDir, hash),
-			cond: sync.NewCond(&sync.Mutex{}),
+			path:       filepath.Join(LibConfig.CacheDir, hash),
+			files:      make(map[string]string),
+			tiles:      make(map[string]string),
+			levels:     make(map[int]struct{}),
+			levelSizes: make(map[int][]int),
+			maxLevel:   -1,
+			cond:       sync.NewCond(&sync.Mutex{}),
 		}
 		item.wg.Add(1) // Новый процесс скачивания
 		cache.files[hash] = item
@@ -74,18 +78,8 @@ func serveHandler(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			defer item.wg.Done()
 
-			// Создаем директорию
-			if err := os.MkdirAll(item.path, os.ModePerm); err != nil {
-				log.Printf("Failed to create cache directory: %v", err)
-				cache.mu.Lock()
-				delete(cache.files, hash)
-				cache.mu.Unlock()
-				return
-			}
-
-			// Скачиваем и распаковываем ZIP
-			if err := downloadAndUnzip(key); err != nil {
-				log.Printf("Failed to download or extract ZIP file: %v", err)
+			if err := prepareArchiveIndex(key, item); err != nil {
+				log.Printf("Failed to prepare archive index: %v", err)
 				cache.mu.Lock()
 				delete(cache.files, hash)
 				cache.mu.Unlock()
@@ -104,8 +98,11 @@ func serveHandler(w http.ResponseWriter, r *http.Request) {
 	item.lastAccess = time.Now()
 	cache.mu.Unlock()
 
-	// Отдаем файл
-	filePath := filepath.Join(LibConfig.CacheDir, hash, tilePath)
+	filePath, ok := item.files[tilePath]
+	if !ok {
+		http.Error(w, "Tile not found", http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", LibConfig.HttpCacheDays*24*3600))
 	w.Header().Set("Expires", time.Now().Add(time.Duration(LibConfig.HttpCacheDays)*24*time.Hour).Format(http.TimeFormat))
 	w.Header().Set("Content-Type", "image/jpeg")

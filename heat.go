@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -33,21 +32,22 @@ func heatHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println(item)
 
 	//check folder exists
-	if _, err := os.Stat(destDir); !os.IsNotExist(err) {
-		log.Println("Cache exists", destDir)
+	item = &CacheItem{
+		path:       filepath.Join(LibConfig.CacheDir, hash),
+		files:      make(map[string]string),
+		tiles:      make(map[string]string),
+		levels:     make(map[int]struct{}),
+		levelSizes: make(map[int][]int),
+		maxLevel:   -1,
+		cond:       sync.NewCond(&sync.Mutex{}),
+	}
+
+	if err := prepareArchiveIndex(key, item); err != nil {
+		http.Error(w, "Failed to download and unzip", http.StatusInternalServerError)
 		return
 	}
-
-	if err := downloadAndUnzip(key); err != nil {
-		http.Error(w, "Failed to download and unzip", http.StatusInternalServerError)
-	}
+	cache.files[hash] = item
 
 	log.Println("heatHandler", destDir)
-
-	item = &CacheItem{
-		path: filepath.Join(LibConfig.CacheDir, hash),
-		cond: sync.NewCond(&sync.Mutex{}),
-	}
-	cache.files[hash] = item
 
 }

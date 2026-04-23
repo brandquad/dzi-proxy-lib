@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	stddraw "image/draw"
 	"image/jpeg"
 	_ "image/png"
 	"math"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +31,14 @@ type compositeParams struct {
 	isColor bool
 }
 
+type renderProfile struct {
+	tiles      int
+	findPath   time.Duration
+	decodeTile time.Duration
+	crop       time.Duration
+	scale      time.Duration
+}
+
 var compositeLevelCache = struct {
 	mu     sync.RWMutex
 	levels map[string]int
@@ -39,6 +47,9 @@ var compositeLevelCache = struct {
 }
 
 func compositeHandler(w http.ResponseWriter, r *http.Request) {
+	requestStarted := time.Now()
+	defer debugLogDuration("composite.request.total", requestStarted)
+
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -57,42 +68,53 @@ func compositeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cachePath, err := ensureCompositeArchiveReady(key)
+	prepareArchiveStarted := time.Now()
+	item, err := ensureCompositeArchiveReady(key)
 	if err != nil {
 		http.Error(w, "Failed to download and unzip", http.StatusInternalServerError)
 		return
 	}
+	debugLogDuration("composite.prepare_archive", prepareArchiveStarted)
 	debugLogMemStats("composite.after_prepare_archive")
 
-	serveCompositeImage(w, r, key, cachePath)
+	serveCompositeImage(w, r, key, item)
 }
 
-func serveCompositeImage(w http.ResponseWriter, r *http.Request, key, cachePath string) {
-	params, err := parseCompositeParams(r, key, cachePath)
+func serveCompositeImage(w http.ResponseWriter, r *http.Request, key string, item *CacheItem) {
+	parseParamsStarted := time.Now()
+	params, err := parseCompositeParams(r, key, item)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	debugLogDuration("composite.parse_params", parseParamsStarted)
 
 	debugLogMemStats("composite.before_build")
-	img, err := buildCompositeImage(cachePath, params)
+	buildStarted := time.Now()
+	img, err := buildCompositeImage(item, params)
 	if err != nil {
 		http.Error(w, "Failed to build image", http.StatusInternalServerError)
 		return
 	}
+	debugLogDuration("composite.build_image", buildStarted)
 	debugLogMemStats("composite.after_build")
 
 	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", LibConfig.HttpCacheDays*24*3600))
 	w.Header().Set("Expires", time.Now().Add(time.Duration(LibConfig.HttpCacheDays)*24*time.Hour).Format(http.TimeFormat))
 	w.Header().Set("Content-Type", "image/jpeg")
+	encodeStarted := time.Now()
 	if err := jpeg.Encode(w, img, &jpeg.Options{Quality: 90}); err != nil {
 		http.Error(w, "Failed to encode image", http.StatusInternalServerError)
 		return
 	}
+	debugLogDuration("composite.encode", encodeStarted)
 	debugLogMemStats("composite.after_encode")
 }
 
-func ensureCompositeArchiveReady(key string) (string, error) {
+func ensureCompositeArchiveReady(key string) (*CacheItem, error) {
+	stepStarted := time.Now()
+	defer debugLogDuration("composite.ensure_archive_ready", stepStarted)
+
 	hash := getMD5Hash(key)
 
 	fileMutexesMu.Lock()
@@ -110,8 +132,13 @@ func ensureCompositeArchiveReady(key string) (string, error) {
 	item, exists := cache.files[hash]
 	if !exists {
 		item = &CacheItem{
-			path: filepath.Join(LibConfig.CacheDir, hash),
-			cond: sync.NewCond(&sync.Mutex{}),
+			path:       filepath.Join(LibConfig.CacheDir, hash),
+			files:      make(map[string]string),
+			tiles:      make(map[string]string),
+			levels:     make(map[int]struct{}),
+			levelSizes: make(map[int][]int),
+			maxLevel:   -1,
+			cond:       sync.NewCond(&sync.Mutex{}),
 		}
 		item.wg.Add(1)
 		cache.files[hash] = item
@@ -120,14 +147,7 @@ func ensureCompositeArchiveReady(key string) (string, error) {
 		go func() {
 			defer item.wg.Done()
 
-			if err := os.MkdirAll(item.path, os.ModePerm); err != nil {
-				cache.mu.Lock()
-				delete(cache.files, hash)
-				cache.mu.Unlock()
-				return
-			}
-
-			if err := downloadAndUnzip(key); err != nil {
+			if err := prepareArchiveIndex(key, item); err != nil {
 				cache.mu.Lock()
 				delete(cache.files, hash)
 				cache.mu.Unlock()
@@ -144,14 +164,19 @@ func ensureCompositeArchiveReady(key string) (string, error) {
 	item.lastAccess = time.Now()
 	cache.mu.Unlock()
 
-	if _, err := os.Stat(item.path); err != nil {
-		return "", err
+	if len(item.files) == 0 {
+		return nil, errors.New("archive index is empty")
 	}
 
-	return item.path, nil
+	debugLogLevelSizes(hash, item.levelSizes)
+
+	return item, nil
 }
 
-func parseCompositeParams(r *http.Request, key, cachePath string) (compositeParams, error) {
+func parseCompositeParams(r *http.Request, key string, item *CacheItem) (compositeParams, error) {
+	stepStarted := time.Now()
+	defer debugLogDuration("composite.parse_params.inner", stepStarted)
+
 	query := r.URL.Query()
 	params := compositeParams{
 		overlap: 1,
@@ -164,7 +189,7 @@ func parseCompositeParams(r *http.Request, key, cachePath string) (compositePara
 			return compositeParams{}, err
 		}
 	} else {
-		params.level, err = detectMaxLevel(key, cachePath)
+		params.level, err = detectMaxLevel(key, item)
 		if err != nil {
 			return compositeParams{}, err
 		}
@@ -213,7 +238,10 @@ func parseCompositeParams(r *http.Request, key, cachePath string) (compositePara
 	return params, nil
 }
 
-func detectMaxLevel(key, cachePath string) (int, error) {
+func detectMaxLevel(key string, item *CacheItem) (int, error) {
+	stepStarted := time.Now()
+	defer debugLogDuration("composite.detect_max_level", stepStarted)
+
 	compositeLevelCache.mu.RLock()
 	level, ok := compositeLevelCache.levels[key]
 	compositeLevelCache.mu.RUnlock()
@@ -221,51 +249,38 @@ func detectMaxLevel(key, cachePath string) (int, error) {
 		return level, nil
 	}
 
-	entries, err := os.ReadDir(cachePath)
-	if err != nil {
-		return 0, err
-	}
-
-	maxLevel := -1
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
-		level, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		if level > maxLevel {
-			maxLevel = level
-		}
-	}
-
-	if maxLevel < 0 {
+	if item.maxLevel < 0 {
 		return 0, errors.New("no level directories found")
 	}
 
 	compositeLevelCache.mu.Lock()
-	compositeLevelCache.levels[key] = maxLevel
+	compositeLevelCache.levels[key] = item.maxLevel
 	compositeLevelCache.mu.Unlock()
 
-	return maxLevel, nil
+	return item.maxLevel, nil
 }
 
-func buildCompositeImage(cachePath string, params compositeParams) (image.Image, error) {
-	levelDir := filepath.Join(cachePath, strconv.Itoa(params.level))
-	if _, err := os.Stat(levelDir); err != nil {
-		return nil, err
+func buildCompositeImage(item *CacheItem, params compositeParams) (image.Image, error) {
+	stepStarted := time.Now()
+	defer debugLogDuration("composite.build_image.total", stepStarted)
+
+	if _, exists := item.levels[params.level]; !exists {
+		return nil, fmt.Errorf("level not found: %d", params.level)
 	}
 
-	colWidths, err := collectColumnWidths(levelDir, params)
+	collectColumnsStarted := time.Now()
+	colWidths, err := collectColumnWidths(item, params)
 	if err != nil {
 		return nil, err
 	}
-	rowHeights, err := collectRowHeights(levelDir, params)
+	debugLogDuration("composite.collect_column_widths", collectColumnsStarted)
+
+	collectRowsStarted := time.Now()
+	rowHeights, err := collectRowHeights(item, params)
 	if err != nil {
 		return nil, err
 	}
+	debugLogDuration("composite.collect_row_heights", collectRowsStarted)
 
 	totalWidth := sumInts(colWidths)
 	totalHeight := sumInts(rowHeights)
@@ -281,19 +296,27 @@ func buildCompositeImage(cachePath string, params compositeParams) (image.Image,
 	scaleX := float64(targetWidth) / float64(totalWidth)
 	scaleY := float64(targetHeight) / float64(totalHeight)
 
+	renderStarted := time.Now()
+	profile := renderProfile{}
 	for row := params.rowMin; row <= params.rowMax; row++ {
 		for col := params.colMin; col <= params.colMax; col++ {
-			tilePath, err := findTilePath(levelDir, col, row)
+			findPathStarted := time.Now()
+			tilePath, err := findTilePath(item, params.level, col, row)
+			profile.findPath += time.Since(findPathStarted)
 			if err != nil {
 				return nil, err
 			}
 
+			decodeStarted := time.Now()
 			source, err := decodeTile(tilePath)
+			profile.decodeTile += time.Since(decodeStarted)
 			if err != nil {
 				return nil, err
 			}
 
+			cropStarted := time.Now()
 			crop := cropBounds(source.Bounds(), params, col, row)
+			profile.crop += time.Since(cropStarted)
 			if crop.Empty() {
 				continue
 			}
@@ -313,17 +336,22 @@ func buildCompositeImage(cachePath string, params compositeParams) (image.Image,
 				continue
 			}
 
-			scaleTileInto(result, dstRect, source, crop, params.isColor)
+			scaleStarted := time.Now()
+			scaleTileInto(result, dstRect, source, crop)
+			profile.scale += time.Since(scaleStarted)
+			profile.tiles++
 		}
 	}
+	debugLogDuration("composite.render_tiles", renderStarted)
+	debugLogRenderProfile(profile)
 
 	return result, nil
 }
 
-func collectColumnWidths(levelDir string, params compositeParams) ([]int, error) {
+func collectColumnWidths(item *CacheItem, params compositeParams) ([]int, error) {
 	widths := make([]int, 0, params.colMax-params.colMin+1)
 	for col := params.colMin; col <= params.colMax; col++ {
-		tilePath, err := findTilePath(levelDir, col, params.rowMin)
+		tilePath, err := findTilePath(item, params.level, col, params.rowMin)
 		if err != nil {
 			return nil, err
 		}
@@ -346,10 +374,10 @@ func collectColumnWidths(levelDir string, params compositeParams) ([]int, error)
 	return widths, nil
 }
 
-func collectRowHeights(levelDir string, params compositeParams) ([]int, error) {
+func collectRowHeights(item *CacheItem, params compositeParams) ([]int, error) {
 	heights := make([]int, 0, params.rowMax-params.rowMin+1)
 	for row := params.rowMin; row <= params.rowMax; row++ {
-		tilePath, err := findTilePath(levelDir, params.colMin, row)
+		tilePath, err := findTilePath(item, params.level, params.colMin, row)
 		if err != nil {
 			return nil, err
 		}
@@ -429,16 +457,12 @@ func fitSize(width, height, maxSize int) (int, int) {
 	return targetWidth, targetHeight
 }
 
-func findTilePath(levelDir string, col, row int) (string, error) {
-	pattern := filepath.Join(levelDir, fmt.Sprintf("%d_%d.*", col, row))
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return "", err
+func findTilePath(item *CacheItem, level, col, row int) (string, error) {
+	tileKey := fmt.Sprintf("%d/%d_%d", level, col, row)
+	if path, ok := item.tiles[tileKey]; ok {
+		return path, nil
 	}
-	if len(matches) == 0 {
-		return "", fmt.Errorf("tile not found: %d_%d", col, row)
-	}
-	return matches[0], nil
+	return "", fmt.Errorf("tile not found: %d/%d_%d", level, col, row)
 }
 
 func decodeTileConfig(path string) (image.Config, error) {
@@ -495,7 +519,7 @@ type drawImage interface {
 	Set(x, y int, c color.Color)
 }
 
-func scaleTileInto(dst drawImage, dstRect image.Rectangle, src image.Image, srcRect image.Rectangle, isColor bool) {
+func scaleTileInto(dst drawImage, dstRect image.Rectangle, src image.Image, srcRect image.Rectangle) {
 	if dstRect.Empty() || srcRect.Empty() {
 		return
 	}
@@ -503,37 +527,15 @@ func scaleTileInto(dst drawImage, dstRect image.Rectangle, src image.Image, srcR
 	if dstRect.Dx() == srcRect.Dx() && dstRect.Dy() == srcRect.Dy() {
 		for y := 0; y < dstRect.Dy(); y++ {
 			for x := 0; x < dstRect.Dx(); x++ {
-				dst.Set(dstRect.Min.X+x, dstRect.Min.Y+y, normalizeColor(src.At(srcRect.Min.X+x, srcRect.Min.Y+y), isColor))
+				dst.Set(dstRect.Min.X+x, dstRect.Min.Y+y, src.At(srcRect.Min.X+x, srcRect.Min.Y+y))
 			}
 		}
 		return
 	}
 
-	if isColor {
-		rgbaDst, ok := dst.(*image.RGBA)
-		if !ok {
-			return
-		}
-		xdraw.CatmullRom.Scale(rgbaDst, dstRect, src, srcRect, xdraw.Over, nil)
-		return
-	}
-
-	grayDst, ok := dst.(*image.Gray)
+	drawDst, ok := dst.(stddraw.Image)
 	if !ok {
 		return
 	}
-	graySrc := image.NewGray(srcRect)
-	for y := srcRect.Min.Y; y < srcRect.Max.Y; y++ {
-		for x := srcRect.Min.X; x < srcRect.Max.X; x++ {
-			graySrc.Set(x, y, color.GrayModel.Convert(src.At(x, y)))
-		}
-	}
-	xdraw.CatmullRom.Scale(grayDst, dstRect, graySrc, srcRect, xdraw.Over, nil)
-}
-
-func normalizeColor(c color.Color, isColor bool) color.Color {
-	if isColor {
-		return c
-	}
-	return color.GrayModel.Convert(c)
+	xdraw.ApproxBiLinear.Scale(drawDst, dstRect, src, srcRect, xdraw.Over, nil)
 }
