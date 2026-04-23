@@ -19,4 +19,5 @@ type Config struct {
 	CacheDir          string
 	HttpCacheDays     int
 	Silent            bool
+	Debug             bool
 }

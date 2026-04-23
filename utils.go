@@ -5,14 +5,54 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/s3"
 )
+
+func parseBoolParam(raw, name string) (bool, error) {
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s", name)
+	}
+	return value, nil
+}
+
+func requiredInt(raw, name string) (int, error) {
+	if raw == "" {
+		return 0, fmt.Errorf("missing %s", name)
+	}
+
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s", name)
+	}
+
+	return value, nil
+}
+
+func decode(urlPath string) ([]string, string, error) {
+	fullPath := urlPath
+	matches := dziPathRegex.FindStringSubmatch(fullPath)
+	if len(matches) == 0 {
+		return nil, "", nil
+	}
+	hexedStr := matches[1]
+	unHexedBytes, err := hex.DecodeString(hexedStr)
+	if err != nil {
+		return nil, "", err
+	}
+	fullPath = strings.Replace(fullPath, hexedStr, string(unHexedBytes), 1)
+	pairs := strings.Split(fullPath, ".zip")
+
+	return pairs, fullPath, nil
+}
 
 func getMD5Hash(text string) string {
 	hasher := md5.Sum([]byte(text))

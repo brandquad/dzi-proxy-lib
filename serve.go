@@ -1,7 +1,6 @@
 package dziproxylib
 
 import (
-	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -18,66 +17,7 @@ var fileMutexes = make(map[string]*sync.Mutex)
 var fileMutexesMu sync.Mutex // защита доступа к fileMutexes
 var dziPathRegex = regexp.MustCompile(`/dzi(?:_bw)?/page_\d+/([0-9a-f]+)/`)
 
-func decode(urlPath string) ([]string, string, error) {
-	fullPath := urlPath
-	matches := dziPathRegex.FindStringSubmatch(fullPath)
-	if len(matches) == 0 {
-		return nil, "", nil
-	}
-	hexedStr := matches[1]
-	unHexedBytes, err := hex.DecodeString(hexedStr)
-	if err != nil {
-		return nil, "", err
-	}
-	fullPath = strings.Replace(fullPath, hexedStr, string(unHexedBytes), 1)
-	pairs := strings.Split(fullPath, ".zip")
-
-	return pairs, fullPath, nil
-}
-
-func heatHandler(w http.ResponseWriter, r *http.Request) {
-
-	urlPath := strings.TrimPrefix(r.URL.Path, "/heat")
-	pairs, _, err := decode(urlPath)
-	if err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
-	}
-	key := fmt.Sprintf("%s.zip", pairs[0])
-	hash := getMD5Hash(key)
-	destDir := filepath.Join(LibConfig.CacheDir, hash)
-
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-
-	item, exists := cache.files[hash]
-	if exists {
-		log.Println("Cache exists")
-		return
-	}
-
-	log.Println(item)
-
-	//check folder exists
-	if _, err := os.Stat(destDir); !os.IsNotExist(err) {
-		log.Println("Cache exists", destDir)
-		return
-	}
-
-	if err := downloadAndUnzip(key); err != nil {
-		http.Error(w, "Failed to download and unzip", http.StatusInternalServerError)
-	}
-
-	log.Println("heatHandler", destDir)
-
-	item = &CacheItem{
-		path: filepath.Join(LibConfig.CacheDir, hash),
-		cond: sync.NewCond(&sync.Mutex{}),
-	}
-	cache.files[hash] = item
-
-}
-
-func handler(w http.ResponseWriter, r *http.Request) {
+func serveHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK) // Отвечаем "OK" на preflight-запросы
 		return
@@ -173,20 +113,5 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	if !LibConfig.Silent {
 		log.Printf("Served file: %s -> %s", fullPath, filePath)
-	}
-}
-
-// Фоновая горутина для очистки устаревших директорий
-func CleanupCache() {
-	for {
-		time.Sleep(1 * time.Minute)
-		cache.mu.Lock()
-		for zipPath, item := range cache.files {
-			if time.Since(item.lastAccess) > LibConfig.CleanupTimeout {
-				os.RemoveAll(filepath.Join(LibConfig.CacheDir, filepath.Base(zipPath)))
-				delete(cache.files, zipPath)
-			}
-		}
-		cache.mu.Unlock()
 	}
 }
