@@ -276,15 +276,15 @@ func sumTileConfigs(paths map[int]string, useWidth bool) (int, error) {
 
 	total := 0
 	for _, key := range keys {
-		cfg, err := decodeTileConfig(paths[key])
+		width, height, err := loadVipsTileSize(paths[key])
 		if err != nil {
 			return 0, err
 		}
 		if useWidth {
-			total += cfg.Width
+			total += width
 			continue
 		}
-		total += cfg.Height
+		total += height
 	}
 
 	return total, nil
