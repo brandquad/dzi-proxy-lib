@@ -1,8 +1,6 @@
 module github.com/brandquad/dzi-proxy-lib
 
-go 1.26.1
-
-toolchain go1.26.2
+go 1.26.2
 
 require (
 	github.com/aws/aws-sdk-go v1.55.6
