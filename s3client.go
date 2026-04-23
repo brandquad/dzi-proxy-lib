@@ -17,7 +17,7 @@ func getS3() *s3.S3 {
 		return _s3client
 	}
 
-	session, err := session.NewSession(&aws.Config{
+	s, err := session.NewSession(&aws.Config{
 		Credentials: awscredentials.NewStaticCredentials(
 			LibConfig.S3AccessKey,
 			LibConfig.S3SecretKey, "",
@@ -30,6 +30,6 @@ func getS3() *s3.S3 {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	_s3client = s3.New(session)
+	_s3client = s3.New(s)
 	return _s3client
 }

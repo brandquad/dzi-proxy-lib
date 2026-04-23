@@ -330,12 +330,17 @@ func unzip(src, dest string) (*archiveIndex, error) {
 			return nil, err
 		}
 
-		outFile, err := os.OpenFile(fPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		var (
+			outFile *os.File
+			rc      io.ReadCloser
+		)
+
+		outFile, err = os.OpenFile(fPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
 		if err != nil {
 			return nil, err
 		}
 
-		rc, err := f.Open()
+		rc, err = f.Open()
 		if err != nil {
 			return nil, err
 		}
