@@ -141,6 +141,8 @@ panic(srv.ListenAndServe())
 - итог всегда отдаётся как `image/jpeg`
 - overlap учитывается при склейке соседних тайлов
 - если задан `max_size`, изображение собирается сразу в уменьшённый размер
+- перед финальным resize для `image.YCbCr` и `image.Gray` используется progressive downscaling:
+  изображение последовательно уменьшается в 2 раза, пока это выгодно, и только потом применяется финальный `ApproxBiLinear`
 - для `webp` тайлов используется декодер `golang.org/x/image/webp`
 
 ### Пример
@@ -155,6 +157,22 @@ panic(srv.ListenAndServe())
 - параллельные запросы к одному и тому же архиву синхронизируются через mutex + wait group
 - максимальный `level` для `/composite/...` кешируется в памяти по `key`
 - фоновая очистка удаляет старые директории из кеша по `CleanupTimeout`
+
+## SIMD-ускорение
+
+Для half-downscale проходов в composite pipeline есть SIMD-реализация под Go 1.26:
+
+- scalar fallback используется по умолчанию
+- SIMD-вариант собирается только при `GOEXPERIMENT=simd`
+- текущая SIMD-реализация включается только на `amd64`
+
+Пример сборки или запуска тестов с SIMD:
+
+```bash
+GOEXPERIMENT=simd go test ./...
+```
+
+На `arm64` и в обычной сборке библиотека автоматически использует scalar fallback без дополнительных настроек.
 
 ## Memory trace
 
@@ -174,3 +192,4 @@ panic(srv.ListenAndServe())
 - composite endpoint возвращает только JPEG
 - обычный tile endpoint сейчас выставляет `Content-Type: image/jpeg`, даже если файл тайла имеет другое расширение
 - библиотека хранит распакованные архивы на локальном диске
+- SIMD-ускорение half-downscale сейчас недоступно на `arm64`

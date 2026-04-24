@@ -524,18 +524,17 @@ func scaleTileInto(dst drawImage, dstRect image.Rectangle, src image.Image, srcR
 		return
 	}
 
-	if dstRect.Dx() == srcRect.Dx() && dstRect.Dy() == srcRect.Dy() {
-		for y := 0; y < dstRect.Dy(); y++ {
-			for x := 0; x < dstRect.Dx(); x++ {
-				dst.Set(dstRect.Min.X+x, dstRect.Min.Y+y, src.At(srcRect.Min.X+x, srcRect.Min.Y+y))
-			}
-		}
-		return
-	}
+	src, srcRect = prepareSourceForScale(src, srcRect, dstRect.Size())
 
 	drawDst, ok := dst.(stddraw.Image)
 	if !ok {
 		return
 	}
+
+	if dstRect.Dx() == srcRect.Dx() && dstRect.Dy() == srcRect.Dy() {
+		stddraw.Draw(drawDst, dstRect, src, srcRect.Min, stddraw.Src)
+		return
+	}
+
 	xdraw.ApproxBiLinear.Scale(drawDst, dstRect, src, srcRect, xdraw.Over, nil)
 }
