@@ -6,7 +6,6 @@ toolchain go1.26.2
 
 require (
 	github.com/aws/aws-sdk-go v1.55.6
-	github.com/davidbyttow/govips/v2 v2.18.0
 	github.com/rs/cors v1.11.1
 )
 

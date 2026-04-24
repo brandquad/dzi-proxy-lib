@@ -4,13 +4,20 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
+	stddraw "image/draw"
+	"image/jpeg"
+	_ "image/png"
+	"math"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/davidbyttow/govips/v2/vips"
+	xdraw "golang.org/x/image/draw"
+	_ "golang.org/x/image/webp"
 )
 
 type compositeParams struct {
@@ -39,66 +46,9 @@ var compositeLevelCache = struct {
 	levels: make(map[string]int),
 }
 
-var emptyCompositeImageJPEG = []byte{
-	0xff, 0xd8, 0xff, 0xdb, 0x0, 0x84, 0x0, 0x5, 0x3, 0x4, 0x4, 0x4, 0x3, 0x5, 0x4, 0x4,
-	0x4, 0x5, 0x5, 0x5, 0x6, 0x7, 0xc, 0x8, 0x7, 0x7, 0x7, 0x7, 0xf, 0xb, 0xb, 0x9,
-	0xc, 0x11, 0xf, 0x12, 0x12, 0x11, 0xf, 0x11, 0x11, 0x13, 0x16, 0x1c, 0x17, 0x13, 0x14, 0x1a,
-	0x15, 0x11, 0x11, 0x18, 0x21, 0x18, 0x1a, 0x1d, 0x1d, 0x1f, 0x1f, 0x1f, 0x13, 0x17, 0x22, 0x24,
-	0x22, 0x1e, 0x24, 0x1c, 0x1e, 0x1f, 0x1e, 0x1, 0x5, 0x5, 0x5, 0x7, 0x6, 0x7, 0xe, 0x8,
-	0x8, 0xe, 0x1e, 0x14, 0x11, 0x14, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e,
-	0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e,
-	0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e,
-	0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0xff, 0xc0, 0x0, 0x11, 0x8, 0x0, 0x1, 0x0, 0x1, 0x3,
-	0x1, 0x22, 0x0, 0x2, 0x11, 0x1, 0x3, 0x11, 0x1, 0xff, 0xc4, 0x1, 0xa2, 0x0, 0x0, 0x1, 0x5,
-	0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x2,
-	0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0x10, 0x0, 0x2, 0x1, 0x3, 0x3, 0x2,
-	0x4, 0x3, 0x5, 0x5, 0x4, 0x4, 0x0, 0x0, 0x1, 0x7d, 0x1, 0x2, 0x3, 0x0, 0x4, 0x11,
-	0x5, 0x12, 0x21, 0x31, 0x41, 0x6, 0x13, 0x51, 0x61, 0x7, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91,
-	0xa1, 0x8, 0x23, 0x42, 0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x9,
-	0xa, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x34, 0x35, 0x36, 0x37,
-	0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57,
-	0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77,
-	0x78, 0x79, 0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96,
-	0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4,
-	0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2,
-	0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8,
-	0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0x1, 0x0, 0x3, 0x1,
-	0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x2,
-	0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0x11, 0x0, 0x2, 0x1, 0x2, 0x4, 0x4,
-	0x3, 0x4, 0x7, 0x5, 0x4, 0x4, 0x0, 0x1, 0x2, 0x77, 0x0, 0x1, 0x2, 0x3, 0x11, 0x4,
-	0x5, 0x21, 0x31, 0x6, 0x12, 0x41, 0x51, 0x7, 0x61, 0x71, 0x13, 0x22, 0x32, 0x81, 0x8, 0x14,
-	0x42, 0x91, 0xa1, 0xb1, 0xc1, 0x9, 0x23, 0x33, 0x52, 0xf0, 0x15, 0x62, 0x72, 0xd1, 0xa, 0x16,
-	0x24, 0x34, 0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x35, 0x36,
-	0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55, 0x56,
-	0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76,
-	0x77, 0x78, 0x79, 0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94,
-	0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2,
-	0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9,
-	0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7,
-	0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xff, 0xda, 0x0, 0xc,
-	0x3, 0x1, 0x0, 0x2, 0x11, 0x3, 0x11, 0x0, 0x3f, 0x0, 0xf8, 0xca, 0x8a, 0x28, 0xa0, 0xf,
-	0xff, 0xd9,
-}
-
-var vipsStartupOnce sync.Once
-var vipsStartupErr error
-
-func ensureVipsStarted() error {
-	vipsStartupOnce.Do(func() {
-		vips.LoggingSettings(func(messageDomain string, messageLevel vips.LogLevel, message string) {}, vips.LogLevelError)
-		vipsStartupErr = vips.Startup(nil)
-	})
-	return vipsStartupErr
-}
-
 func compositeHandler(w http.ResponseWriter, r *http.Request) {
 	requestStarted := time.Now()
 	defer debugLogDuration("composite.request.total", requestStarted)
-
-	if err := ensureVipsStarted(); err != nil {
-		http.Error(w, "Failed to initialize libvips", http.StatusInternalServerError)
-		return
-	}
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
@@ -141,7 +91,7 @@ func serveCompositeImage(w http.ResponseWriter, r *http.Request, key string, ite
 
 	debugLogMemStats("composite.before_build")
 	buildStarted := time.Now()
-	imageBytes, err := buildCompositeImage(item, params)
+	img, err := buildCompositeImage(item, params)
 	if err != nil {
 		http.Error(w, "Failed to build image", http.StatusInternalServerError)
 		return
@@ -153,7 +103,7 @@ func serveCompositeImage(w http.ResponseWriter, r *http.Request, key string, ite
 	w.Header().Set("Expires", time.Now().Add(time.Duration(LibConfig.HttpCacheDays)*24*time.Hour).Format(http.TimeFormat))
 	w.Header().Set("Content-Type", "image/jpeg")
 	encodeStarted := time.Now()
-	if _, err := w.Write(imageBytes); err != nil {
+	if err := jpeg.Encode(w, img, &jpeg.Options{Quality: 90}); err != nil {
 		http.Error(w, "Failed to encode image", http.StatusInternalServerError)
 		return
 	}
@@ -261,6 +211,7 @@ func parseCompositeParams(r *http.Request, key string, item *CacheItem) (composi
 			return compositeParams{}, err
 		}
 	}
+
 	if maxSizeRaw := query.Get("max_size"); maxSizeRaw != "" {
 		params.maxSize, err = requiredInt(maxSizeRaw, "max_size")
 		if err != nil {
@@ -309,7 +260,7 @@ func detectMaxLevel(key string, item *CacheItem) (int, error) {
 	return item.maxLevel, nil
 }
 
-func buildCompositeImage(item *CacheItem, params compositeParams) ([]byte, error) {
+func buildCompositeImage(item *CacheItem, params compositeParams) (image.Image, error) {
 	stepStarted := time.Now()
 	defer debugLogDuration("composite.build_image.total", stepStarted)
 
@@ -338,11 +289,7 @@ func buildCompositeImage(item *CacheItem, params compositeParams) ([]byte, error
 	}
 
 	targetWidth, targetHeight := fitSize(totalWidth, totalHeight, params.maxSize)
-	canvas, err := newVipsCanvas(targetWidth, targetHeight)
-	if err != nil {
-		return nil, err
-	}
-	defer canvas.Close()
+	result := newCompositeCanvas(targetWidth, targetHeight, params.isColor)
 
 	xOffsets := prefixSums(colWidths)
 	yOffsets := prefixSums(rowHeights)
@@ -351,9 +298,6 @@ func buildCompositeImage(item *CacheItem, params compositeParams) ([]byte, error
 
 	renderStarted := time.Now()
 	profile := renderProfile{}
-	overlays := make([]*vips.ImageComposite, 0, (params.rowMax-params.rowMin+1)*(params.colMax-params.colMin+1))
-	defer closeComposites(overlays)
-
 	for row := params.rowMin; row <= params.rowMax; row++ {
 		for col := params.colMin; col <= params.colMax; col++ {
 			findPathStarted := time.Now()
@@ -364,17 +308,16 @@ func buildCompositeImage(item *CacheItem, params compositeParams) ([]byte, error
 			}
 
 			decodeStarted := time.Now()
-			tile, err := vips.LoadImageFromFile(tilePath, nil)
+			source, err := decodeTile(tilePath)
 			profile.decodeTile += time.Since(decodeStarted)
 			if err != nil {
 				return nil, err
 			}
 
 			cropStarted := time.Now()
-			crop := cropBounds(image.Rect(0, 0, tile.Width(), tile.Height()), params, col, row)
+			crop := cropBounds(source.Bounds(), params, col, row)
 			profile.crop += time.Since(cropStarted)
 			if crop.Empty() {
-				tile.Close()
 				continue
 			}
 
@@ -390,140 +333,19 @@ func buildCompositeImage(item *CacheItem, params compositeParams) ([]byte, error
 				scaledCoord(srcY1, scaleY),
 			)
 			if dstRect.Empty() {
-				tile.Close()
 				continue
 			}
 
 			scaleStarted := time.Now()
-			if err := tile.ExtractArea(crop.Min.X, crop.Min.Y, crop.Dx(), crop.Dy()); err != nil {
-				tile.Close()
-				return nil, err
-			}
-			if tile.Width() != dstRect.Dx() || tile.Height() != dstRect.Dy() {
-				if err := tile.ResizeWithVScale(
-					float64(dstRect.Dx())/float64(tile.Width()),
-					float64(dstRect.Dy())/float64(tile.Height()),
-					vips.KernelLinear,
-				); err != nil {
-					tile.Close()
-					return nil, err
-				}
-			}
-			if err := tile.ToColorSpace(vips.InterpretationSRGB); err != nil {
-				tile.Close()
-				return nil, err
-			}
+			scaleTileInto(result, dstRect, source, crop)
 			profile.scale += time.Since(scaleStarted)
-
-			overlays = append(overlays, &vips.ImageComposite{
-				Image:     tile,
-				BlendMode: vips.BlendModeOver,
-				X:         dstRect.Min.X,
-				Y:         dstRect.Min.Y,
-			})
 			profile.tiles++
-		}
-	}
-
-	if len(overlays) > 0 {
-		if err := canvas.CompositeMulti(overlays); err != nil {
-			return nil, err
 		}
 	}
 	debugLogDuration("composite.render_tiles", renderStarted)
 	debugLogRenderProfile(profile)
-	debugLogMemStats("composite.after_render_tiles")
 
-	flattenStarted := time.Now()
-	if err := canvas.Flatten(&vips.Color{R: 0, G: 0, B: 0}); err != nil {
-		return nil, err
-	}
-	debugLogDuration("composite.flatten", flattenStarted)
-	debugLogMemStats("composite.after_flatten")
-
-	avg, err := calcAvgGrayImage(canvas)
-	if err != nil {
-		return nil, err
-	}
-	if avg > 220 || avg < 30 {
-		return emptyCompositeImageJPEG, nil
-	}
-
-	if !params.isColor {
-		colorSpaceStarted := time.Now()
-		if err := canvas.ToColorSpace(vips.InterpretationBW); err != nil {
-			return nil, err
-		}
-		debugLogDuration("composite.to_bw", colorSpaceStarted)
-		debugLogMemStats("composite.after_to_bw")
-	}
-
-	jpegParams := &vips.JpegExportParams{
-		Quality:            85,                          // 95 → 85 даёт ~2x прирост и почти незаметно глазу
-		Interlace:          false,                       // progressive JPEG медленнее в 1.5-2 раза
-		OptimizeCoding:     false,                       // Huffman-оптимизация дорогая, выигрыш ~3-5% размера
-		SubsampleMode:      vips.VipsForeignSubsampleOn, // 4:2:0 вместо 4:4:4
-		TrellisQuant:       false,                       // все эти "optimize"-флаги жрут CPU
-		OvershootDeringing: false,
-		OptimizeScans:      false,
-		QuantTable:         0,
-	}
-
-	exportStarted := time.Now()
-	imageBytes, _, err := canvas.ExportJpeg(jpegParams)
-	if err != nil {
-		return nil, err
-	}
-	debugLogDuration("composite.export_jpeg", exportStarted)
-	debugLogMemStats("composite.after_export_jpeg")
-
-	return imageBytes, nil
-}
-
-func newVipsCanvas(width, height int) (*vips.ImageRef, error) {
-	canvas, err := vips.NewTransparentCanvas(width, height)
-	if err != nil {
-		return nil, err
-	}
-	return canvas, nil
-}
-
-func calcAvgGrayImage(img *vips.ImageRef) (uint8, error) {
-	if img == nil {
-		return 0, nil
-	}
-
-	grayImage, err := img.Copy()
-	if err != nil {
-		return 0, err
-	}
-	defer grayImage.Close()
-
-	if err := grayImage.ToColorSpace(vips.InterpretationBW); err != nil {
-		return 0, err
-	}
-
-	avg, err := grayImage.Average()
-	if err != nil {
-		return 0, err
-	}
-
-	if avg < 0 {
-		avg = 0
-	}
-	if avg > 255 {
-		avg = 255
-	}
-
-	return uint8(avg + 0.5), nil
-}
-
-func closeComposites(composites []*vips.ImageComposite) {
-	for _, composite := range composites {
-		if composite != nil && composite.Image != nil {
-			composite.Image.Close()
-		}
-	}
+	return result, nil
 }
 
 func collectColumnWidths(item *CacheItem, params compositeParams) ([]int, error) {
@@ -533,10 +355,11 @@ func collectColumnWidths(item *CacheItem, params compositeParams) ([]int, error)
 		if err != nil {
 			return nil, err
 		}
-		width, _, err := loadVipsTileSize(tilePath)
+		cfg, err := decodeTileConfig(tilePath)
 		if err != nil {
 			return nil, err
 		}
+		width := cfg.Width
 		if col > params.colMin {
 			width -= params.overlap
 		}
@@ -558,10 +381,11 @@ func collectRowHeights(item *CacheItem, params compositeParams) ([]int, error) {
 		if err != nil {
 			return nil, err
 		}
-		_, height, err := loadVipsTileSize(tilePath)
+		cfg, err := decodeTileConfig(tilePath)
 		if err != nil {
 			return nil, err
 		}
+		height := cfg.Height
 		if row > params.rowMin {
 			height -= params.overlap
 		}
@@ -574,15 +398,6 @@ func collectRowHeights(item *CacheItem, params compositeParams) ([]int, error) {
 		heights = append(heights, height)
 	}
 	return heights, nil
-}
-
-func loadVipsTileSize(path string) (int, int, error) {
-	ref, err := vips.LoadImageFromFile(path, nil)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer ref.Close()
-	return ref.Width(), ref.Height(), nil
 }
 
 func cropBounds(bounds image.Rectangle, params compositeParams, col, row int) image.Rectangle {
@@ -629,7 +444,7 @@ func fitSize(width, height, maxSize int) (int, int) {
 			return width, height
 		}
 		targetWidth := maxSize
-		targetHeight := max(1, int(float64(height)*float64(maxSize)/float64(width)+0.5))
+		targetHeight := max(1, int(math.Round(float64(height)*float64(maxSize)/float64(width))))
 		return targetWidth, targetHeight
 	}
 
@@ -638,7 +453,7 @@ func fitSize(width, height, maxSize int) (int, int) {
 	}
 
 	targetHeight := maxSize
-	targetWidth := max(1, int(float64(width)*float64(maxSize)/float64(height)+0.5))
+	targetWidth := max(1, int(math.Round(float64(width)*float64(maxSize)/float64(height))))
 	return targetWidth, targetHeight
 }
 
@@ -648,6 +463,28 @@ func findTilePath(item *CacheItem, level, col, row int) (string, error) {
 		return path, nil
 	}
 	return "", fmt.Errorf("tile not found: %d/%d_%d", level, col, row)
+}
+
+func decodeTileConfig(path string) (image.Config, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return image.Config{}, err
+	}
+	defer file.Close()
+
+	cfg, _, err := image.DecodeConfig(file)
+	return cfg, err
+}
+
+func decodeTile(path string) (image.Image, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	img, _, err := image.Decode(file)
+	return img, err
 }
 
 func prefixSums(values []int) []int {
@@ -667,5 +504,38 @@ func sumInts(values []int) int {
 }
 
 func scaledCoord(value int, scale float64) int {
-	return int(float64(value)*scale + 0.5)
+	return int(math.Round(float64(value) * scale))
+}
+
+func newCompositeCanvas(width, height int, isColor bool) drawImage {
+	if isColor {
+		return image.NewRGBA(image.Rect(0, 0, width, height))
+	}
+	return image.NewGray(image.Rect(0, 0, width, height))
+}
+
+type drawImage interface {
+	image.Image
+	Set(x, y int, c color.Color)
+}
+
+func scaleTileInto(dst drawImage, dstRect image.Rectangle, src image.Image, srcRect image.Rectangle) {
+	if dstRect.Empty() || srcRect.Empty() {
+		return
+	}
+
+	if dstRect.Dx() == srcRect.Dx() && dstRect.Dy() == srcRect.Dy() {
+		for y := 0; y < dstRect.Dy(); y++ {
+			for x := 0; x < dstRect.Dx(); x++ {
+				dst.Set(dstRect.Min.X+x, dstRect.Min.Y+y, src.At(srcRect.Min.X+x, srcRect.Min.Y+y))
+			}
+		}
+		return
+	}
+
+	drawDst, ok := dst.(stddraw.Image)
+	if !ok {
+		return
+	}
+	xdraw.ApproxBiLinear.Scale(drawDst, dstRect, src, srcRect, xdraw.Over, nil)
 }

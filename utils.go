@@ -276,15 +276,15 @@ func sumTileConfigs(paths map[int]string, useWidth bool) (int, error) {
 
 	total := 0
 	for _, key := range keys {
-		width, height, err := loadVipsTileSize(paths[key])
+		cfg, err := decodeTileConfig(paths[key])
 		if err != nil {
 			return 0, err
 		}
 		if useWidth {
-			total += width
+			total += cfg.Width
 			continue
 		}
-		total += height
+		total += cfg.Height
 	}
 
 	return total, nil
@@ -330,17 +330,12 @@ func unzip(src, dest string) (*archiveIndex, error) {
 			return nil, err
 		}
 
-		var (
-			outFile *os.File
-			rc      io.ReadCloser
-		)
-
-		outFile, err = os.OpenFile(fPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		outFile, err := os.OpenFile(fPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
 		if err != nil {
 			return nil, err
 		}
 
-		rc, err = f.Open()
+		rc, err := f.Open()
 		if err != nil {
 			return nil, err
 		}
