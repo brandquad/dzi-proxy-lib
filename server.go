@@ -8,6 +8,7 @@ import (
 
 func DziProxyServer(config *Config) (*http.Server, error) {
 	LibConfig = config
+	startCacheCleanup()
 
 	mux := http.NewServeMux()
 	//mux.HandleFunc("/heat/{path...}", heatHandler)

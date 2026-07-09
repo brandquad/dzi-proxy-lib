@@ -11,6 +11,58 @@ import (
 	"time"
 )
 
+func startCacheCleanup() {
+	ttl := LibConfig.CleanupTimeout
+	if ttl <= 0 && LibConfig.CleanupTimeoutCfg > 0 {
+		ttl = time.Duration(LibConfig.CleanupTimeoutCfg) * time.Minute
+	}
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+
+	go func() {
+		ticker := time.NewTicker(ttl)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleanOldCache(ttl)
+		}
+	}()
+}
+
+func cleanOldCache(ttl time.Duration) {
+	now := time.Now()
+
+	cache.mu.Lock()
+	var oldHashes []string
+	for hash, item := range cache.files {
+		if !item.lastAccess.IsZero() && now.Sub(item.lastAccess) > ttl {
+			oldHashes = append(oldHashes, hash)
+		}
+	}
+	for _, hash := range oldHashes {
+		delete(cache.files, hash)
+	}
+	cache.mu.Unlock()
+
+	if len(oldHashes) == 0 {
+		return
+	}
+
+	fileMutexesMu.Lock()
+	for _, hash := range oldHashes {
+		delete(fileMutexes, hash)
+	}
+	fileMutexesMu.Unlock()
+
+	compositeLevelCache.mu.Lock()
+	clear(compositeLevelCache.levels)
+	compositeLevelCache.mu.Unlock()
+
+	if !LibConfig.Silent {
+		log.Printf("Cleaned %d old caches", len(oldHashes))
+	}
+}
+
 var cache = &ZipCache{files: make(map[string]*CacheItem)}
 var fileMutexes = make(map[string]*sync.Mutex)
 var fileMutexesMu sync.Mutex // защита доступа к fileMutexes
